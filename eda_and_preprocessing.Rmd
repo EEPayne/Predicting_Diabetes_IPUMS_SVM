@@ -1,0 +1,266 @@
+---
+title: "Exploratory Analysis"
+author: "Elling Payne"
+date: "2025-04-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE);
+knitr::opts_chunk$set(fig.align = "center");
+knitr::opts_chunk$set(seed = 112358);
+library(tidyverse);
+# library(e1071);
+```
+
+## Where did the data come from and what does it represent? What motivations are there for exploring it?
+
+Responses to the IPUMS Health Surveys: National Health Interview Survey
+
+## How much data is there? What are the valid entries for each feature?
+
+```{r}
+ipums <- read.csv("input/nhis_2022.csv");
+
+# remove some variables that will not be useful or interesting for subsetting or modeling
+clean_ipums <- data.frame(ipums);
+total_rows_dirty <- nrow(ipums);
+survey_info_cols <- names(ipums)[1:12];
+demographic_cols <- names(ipums)[c(13:18, 22)];
+disease_indicator_cols <- names(ipums)[23:27];
+health_cols <- names(ipums)[c(19:21, 28:ncol(ipums))];
+print(survey_info_cols);
+print(demographic_cols);
+print(disease_indicator_cols);
+print(health_cols);
+```
+
+```{r}
+# assumes data has already been cast to numeric where applicable
+# converts codes representing missing data to NA and converts HRSLEEP code representing less than
+# one hour to 0 so that the new HRSLEEP is 0-24.
+# For flags indicating a sample adult or sample child, they are converted to NA if not the sample
+# or the sample but data is not available
+codes_to_na <- function(data) {
+  # fields that are yearly or monthly consumption times and
+  # >996 is a missing value (995 = 995 or more)
+  more_freq_consume <- c("FRUTNO", "VEGENO", "BEANNO", "SODAPNO", "FRIESPNO",
+                         "SPORDRMNO", "FRTDRINKMNO", "COFETEAMNO", "POTATONO",
+                         "PIZZANO", "SALSAMNO", "TOMSAUCEMNO");
+  # for diseases besides diabetes, 1 is yes ever had, 2 is no never had
+  # for diabetes, 3 is valid and means borderline had
+  disease_not_diab <- c("CANCEREV", "CHEARTDIEV", "HEARTATTEV", "STROKEV");
+  # fields that are yearly or monthly consumption but have a max value of 95
+  less_freq_consume <- c("JUICEMNO", "SALADSNO");
+  clean_data <- data.frame(data);
+  clean_data[, more_freq_consume] <- clean_data[, more_freq_consume] %>%
+    lapply(function(x) {ifelse(x > 995 | x < 0 | is.na(x), NA, x)});
+  clean_data[, less_freq_consume] <- clean_data[, less_freq_consume] %>%
+    lapply(function(x) {ifelse(x > 95 | x < 0 | is.na(x), NA, x)});
+  clean_data[, disease_not_diab] <- clean_data[, disease_not_diab] %>%
+    lapply(function(x) {ifelse(x == 1 | x == 2 | is.na(x), x, NA)});
+  clean_data <- clean_data %>%
+    mutate(DIABETICEV = ifelse(is.nan(DIABETICEV) | 
+                                 (DIABETICEV != 1 & DIABETICEV != 2 & DIABETICEV != 3),
+                               NA, DIABETICEV)) %>%
+    mutate(HOURSWRK = ifelse(HOURSWRK > 96 | HOURSWRK < 0 | is.na(HOURSWRK), NA, HOURSWRK)) %>%
+    mutate(HRSLEEP = ifelse(HRSLEEP > 25 | HRSLEEP < 1 | is.na(HRSLEEP), NA, 
+                            ifelse(HRSLEEP == 25, 0, HRSLEEP))) %>%
+    mutate(BMICALC = ifelse(BMICALC == 996 | is.na(BMICALC), NA, BMICALC)) %>%
+    mutate(AGE = ifelse(AGE > 99 | is.na(AGE), NA, AGE)) %>%
+    mutate(SEX = ifelse((SEX != 1 & SEX != 2) | is.na(SEX), NA, SEX)) %>%
+    mutate(ASTATFLG = ifelse(ASTATFLG != 1 | is.na(ASTATFLG), 0, 1)) %>%
+    mutate(CSTATFLG = ifelse(CSTATFLG != 1 | is.na(CSTATFLG), 0, 1)) %>%
+    mutate(ALCDAYSYR = ifelse(ALCDAYSYR > 365 | ALCDAYSYR < 0 | is.na(ALCDAYSYR),
+                              NA, ALCDAYSYR)) %>%
+    mutate(CIGDAYMO = ifelse(is.na(CIGDAYMO) | CIGDAYMO < 0 | CIGDAYMO > 30,
+                             NA, CIGDAYMO)) %>%
+    mutate(MOD10DMIN = ifelse(is.na(MOD10DMIN) | MOD10DMIN < 0 | MOD10DMIN > 719,
+                              NA, MOD10DMIN)) %>%
+    mutate(VIG10DMIN = ifelse(is.na(VIG10DMIN) | VIG10DMIN < 0 | VIG10DMIN > 719,
+                              NA, VIG10DMIN));
+  
+  # other demographic variables are likely not valid to use in SVM without vecotrization
+  # since they break interval assumptions making distance comparison difficult.
+  # won't bother cleaning them since I will not be using them
+  # weight might be usable, but is closely related to BMI so I will leave it out for now
+  # some of the binary variables like health insurance status might be usable
+  # but may not be as interesting for a SVM
+  return(clean_data);
+}
+
+# first remove some columns I am not interested in
+clean_ipums <- clean_ipums %>%
+  select(-c("SERIAL", "MARSTCUR", "STRATA", "PSU", "NHISHID", "REGION", "PERNUM", "NHISPID",
+            "HHX", "SAMPWEIGHT", "EDUC", "HEIGHT", "WEIGHT", "HINOTCOVE", 
+            "ALCANYNO", "CVDSHT", "POVERTY")) %>%
+  lapply(as.numeric); # those categories left are numerically encoded
+
+clean_ipums <- codes_to_na(clean_ipums);
+```
+
+```{r}
+names(clean_ipums);
+```
+```{r}
+numeric_cols = c("YEAR", "AGE", "HOURSWRK", "BMICALC", "ALCDAYSYR", "CIGDAYMO",
+                 "MOD10DMIN", "VIG10DMIN", "FRUTNO", "VEGENO", "JUICEMNO", "SALADSNO",
+                 "BEANNO", "SALSAMNO", "TOMSAUCEMNO", "SODAPNO", "FRIESPNO",
+                 "SPORDRMNO", "FRTDRINKMNO", "COFETEAMNO", "POTATONO", "PIZZANO",
+                 "HRSLEEP", "HOURSLP");
+factor_cols = c("ASTATFLG", "CSTATFLG", "SEX", "CANCEREV",
+                "CHEARTDIEV", "DIABETICEV", "HEARTATTEV", "STROKEV");
+clean_ipums[, factor_cols] <- clean_ipums[, factor_cols] %>% lapply(as.factor);
+```
+
+
+
+## How much data is missing? Is there anything of note about which data is missing?
+
+```{r}
+print(paste0("Total Rows in Dataset: ", nrow(clean_ipums)));
+clean_ipums %>% lapply(function(x) {sum(is.na(x))});
+```
+It appears that all of the data here is either from a sample adult or sample child, so we don't have to worry about nonsample participants. Some of the other variables are missing up to around around a quarter of the records
+```{r}
+# even though 3 was a valid class for DIABETICEV, none are 3 so it can be treated as binary (yay)
+table(clean_ipums$DIABETICEV);
+```
+
+
+```{r}
+# lets subset to sample adult men with info. Adults because a lot of data is only collected for
+# sample adults and men just to reduce the sample size
+clean_ipums <- clean_ipums[!is.na(clean_ipums$ASTATFLG) & clean_ipums$ASTATFLG == 1,];
+clean_ipums <- clean_ipums[!is.na(clean_ipums$SEX) & clean_ipums$SEX == 1,];
+clean_ipums <- clean_ipums %>% select(-c("CSTATFLG", "SEX"))
+nrow(clean_ipums);
+```
+```{r}
+# now we have good data for most of the interesting features
+clean_ipums %>% lapply(function(x) {sum(is.na(x))});
+```
+```{r}
+# CIGDAYMO is missing for most of the subset, so lets get rid of that right now
+clean_ipums <- clean_ipums %>% select(-CIGDAYMO);
+```
+
+
+
+## What is the distribution of each feature and target? What imbalances or other concerns are there?
+
+```{r}
+# possible responses
+responses <- c("CANCEREV", "CHEARTDIEV", "DIABETICEV", "HEARTATTEV", "STROKEV");
+features <- c("AGE", "HOURSWRK", "BMICALC", "ALCDAYSYR", "MOD10DMIN",
+              "VIG10DMIN", "FRUTNO", "VEGENO", "JUICEMNO", "SALADSNO", "BEANNO",
+              "SALSAMNO", "TOMSAUCEMNO", "SODAPNO", "FRIESPNO", "SPORDRMNO",
+              "FRTDRINKMNO", "COFETEAMNO", "POTATONO", "PIZZANO", "HRSLEEP");
+```
+```{r}
+for (response in responses) {
+  plt <- ggplot(data=clean_ipums, mapping=aes(x=.data[[response]])) +
+    geom_bar(fill="skyblue", color="darkgrey");
+  print(plt);
+  ggsave(paste0("output/eda/plots/", response, "_class_frequencies_bar.png"),
+           plot = plt, width = 8, height = 8, dpi = "print");
+}
+```
+```{r}
+for (feature in features) {
+  plt <- ggplot(data = clean_ipums, mapping = aes(x=.data[[feature]])) +
+    geom_histogram(bins=30, fill="skyblue", color="darkgrey");
+  print(plt);
+  ggsave(paste0("output/eda/plots/", feature, "_histogram.png"),
+           plot = plt, width = 8, height = 8, dpi = "print");
+}
+```
+
+
+
+
+## plots of target class vs features
+
+```{r}
+# to get an idea of what features and responses might be most interesting,
+# lets remove na rows then plot the features vs responses
+na_removed <- clean_ipums %>% na.omit();
+for (response in responses) {
+  for (feature in features) {
+    plt <- ggplot(data = na_removed, mapping = aes(x=.data[[response]], y=.data[[feature]])) +
+      geom_boxplot(position = "dodge", fill="skyblue", color="darkgrey") +
+      labs(title=paste0(response, " ~ ", feature));
+    print(plt);
+    ggsave(paste0("output/eda/plots/", response, "_vs_", feature, "_boxplot.png"),
+           plot = plt, width = 8, height = 8, dpi = "print");
+  }
+}
+```
+
+```{r}
+# DIABETICEV looked interesting, lets do the plots again for that without outliers
+# to get an idea of what features and responses might be most interesting,
+# lets remove na rows then plot the features vs responses
+for (feature in features) {
+  inter_quartile_range <- IQR(na_removed[[feature]])
+  limits <- c(quantile(na_removed[[feature]], 0.25) - 1.5*inter_quartile_range,
+              quantile(na_removed[[feature]], 0.75) + 1.5*inter_quartile_range)
+  plt <- ggplot(data = na_removed, mapping = aes(x=DIABETICEV, y=.data[[feature]])) +
+    geom_boxplot(position = "dodge", fill="skyblue", color="darkgrey",
+                 outlier.shape = NA) +
+    coord_cartesian(ylim = limits) +
+    labs(title=paste0( "DIABETICEV ~ ", feature));
+  print(plt);
+  ggsave(paste0("output/eda/plots/", response, "_vs_", feature, "_boxplot_no_outliers.png"),
+           plot = plt, width = 8, height = 8, dpi = "print");
+}
+```
+
+
+## pairwise scatter plots of features vs the reponse in color
+
+```{r}
+col_is_numeric <- sapply(na_removed, is.numeric);
+normalized_data <- data.frame(na_removed);
+normalized_data[, col_is_numeric] <- na_removed[, col_is_numeric] %>%
+  lapply(function(x) { return((x - mean(x))/sd(x)) });
+
+for (response in responses) {
+  for (pair in combn(features, 2, simplify = FALSE)) {
+    plt <- ggplot(data = normalized_data, mapping = aes(x=.data[[pair[1]]],
+                                                    y=.data[[pair[2]]],
+                                                    color=.data[[response]])) +
+      geom_point() + 
+      labs(title = paste0(response, " ~ ", pair[1], " + ", pair[2], " (Normalized)"),
+           x = paste0("Normalized ", pair[1]), y = paste0("Normalized ", pair[2]),
+           color = response);
+    scale_labels <- c("No", "Yes");
+    scale_values <- c("1"="skyblue", "2"="coral");
+    if (response == "DIABETICEV") {
+      scale_labels <- c(scale_labels, "Borderline");
+      scale_values <- c(scale_values, "3"="limegreen")
+    }
+    plt <- plt + scale_color_manual(values = scale_values,
+                                    labels = scale_labels);
+    print(plt);
+    ggsave(paste0("output/eda/plots/", response, "_vs_", pair[1], "_and_", pair[2],
+                  "_scatter.png"), plot = plt, width = 8, height = 8, dpi = "print");
+  }
+}
+```
+
+
+## Selection of final features and responses to explore
+
+```{r}
+# select DIABETICEV as the response
+# (Even though it has three valid categories, only two are present so its still a single SVM)
+# And select some of the more interesting features based on Box plots and scatter plots
+diabetes_ipums <- clean_ipums %>% select(c("DIABETICEV", "AGE", "BMICALC", "ALCDAYSYR",
+                                           "HOURSWRK", "SODAPNO", "FRIESPNO")) %>%
+  na.omit();
+write.csv(diabetes_ipums, file="output/preprocessing/data/selected_response_and_features.csv",
+          row.names = FALSE);
+save(diabetes_ipums, file="output/preprocessing/data/selected_response_and_features.RData");
+```
+
