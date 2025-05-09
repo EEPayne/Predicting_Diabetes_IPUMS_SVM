@@ -7,6 +7,7 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE);
 knitr::opts_chunk$set(fig.align = "center");
+knitr::opts_chunk$set(root.dir = dirname(rstudioapi::getActiveDocumentContext()$path));
 knitr::opts_chunk$set(seed = 112358);
 library(tidyverse);
 library(e1071);
@@ -24,16 +25,46 @@ load("output/preprocessing/data/selected_response_and_features.RData");
 # plain accuracy will not be a good evaluation metric given the imbalance in the response
 # returns a list containing class errors and balanced error
 # this can be passed to e1071::tune() as the error.fun parameter
+
+# recall is also very important since failing to identify a positive diagnosis may
+# likely have the greatest harm of any error type
+
 balanced_error <- function(actual, predicted) {
   cm <- table(predicted, actual);
   classes <- dimnames(cm)[[1]];
   errs <- numeric(nrow(cm));
-  for (i in 1:nrow(cm)) {
-    TP <- cm[i, i];
-    TN <- sum(diag(cm)) - TP;
-    errs[i] <- 1 - ((TP + TN) / sum(cm));
-  }
+  TP <- diag(cm);
+  FP <- colSums(cm) - TP;
+  FN <- rowSums(cm) - TP;
+  TN <- sum(cm) - TP - FP - FN;
+  errs <- 1 - ((TP + TN) / sum(cm));
   return(mean(errs));
+};
+
+precision <- function(actual, predicted) {
+  cm <- table(actual, predicted);
+  TP <- cm[2,2];
+  FP <- cm[1,2];
+  return(TP / (TP + FP));
+};
+
+recall <- function(actual, predicted) {
+  cm <- table(actual, predicted);
+  TP <- cm[2,2];
+  FN <- cm[2,1];
+  return(TP / (TP + FN));
+};
+
+f1_score <- function(actual, predicted) {
+  cm <- table(actual, predicted);
+  TP <- cm[2,2];
+  FP <- cm[1,2];
+  FN <- cm[2,1];
+  p <- TP / (TP + FP);
+  r <- TP / (TP + FN);
+  f1 <- 2*p*r/(p + r);
+  f1 <- ifelse(is.na(f1), 0, f1);
+  return(f1);
 };
 ```
 
@@ -52,7 +83,7 @@ train.ipums <- diabetes_ipums[-test.indices,];
 set.seed(112358);
 linear.tune <- tune(svm, DIABETICEV ~ ., data=train.ipums, kernel="linear", scale=TRUE,
                     cross=5, class.weights = "inverse",
-                    ranges=list(cost=c(0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 3, 5, 10)),
+                    ranges=list(cost=c(0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 3)),
                     error.fun=balanced_error);
 best_cost <- linear.tune$best.parameters[1,1];
 linear.chosen_model <- linear.tune$best.model;
@@ -61,13 +92,12 @@ linear.chosen_model <- linear.tune$best.model;
 write.csv(as.data.frame(linear.tune$performances),
           file="output/analysis/data/tuning_results_linear.csv",
           row.names = FALSE);
+
 plt <- ggplot(data = as.data.frame(linear.tune$performances),
               mapping = aes(x=cost, y=error)) +
   geom_line(color="skyblue") +
   labs(title = "Cost vs Balanced CV Error for Linear Kernel",
-       x = "Cost", y = "Balanced Error");# +
-  #annotate(geom="segment", x=best_cost, xend=best_cost, y=-Inf, yend=Inf,
-      #     linetype="dashed", color="darkred");
+       x = "Cost", y = "Balanced Error");
 print(plt);
 ggsave("output/analysis/plots/tuning_params_vs_error_linear.png", plot=plt,
        width=8, height=6, dpi="print");
@@ -78,7 +108,7 @@ ggsave("output/analysis/plots/tuning_params_vs_error_linear.png", plot=plt,
 set.seed(112358);
 poly.tune <- tune(svm, DIABETICEV ~ ., data=train.ipums, kernel="polynomial", scale=TRUE,
                   cross=5, class.weights="inverse",
-                  ranges=list(cost=c(0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 3, 5, 10),
+                  ranges=list(cost=c(0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 3),
                               degree=c(2, 3, 4)),
                   error.fun=balanced_error);
 best_cost.poly <- poly.tune$best.parameters[1,1];
@@ -94,9 +124,7 @@ plt <- ggplot(data = as.data.frame(poly.tune$performances),
                             linetype=as.factor(degree))) +
   geom_line() +
   labs(title = "Cost and Degree vs Balanced CV Error for Polynomial Kernel",
-       x = "Cost", y = "Balanced Error", color="Degree", linetype="Degree");# +
-  #annotate(geom="segment", x=best_cost, xend=best_cost, y=-Inf, yend=Inf,
-      #     linetype="dashed", color="darkred");
+       x = "Cost", y = "Balanced Error", color="Degree", linetype="Degree");
 print(plt);
 ggsave("output/analysis/plots/tuning_params_vs_error_polynomial.png", 
        plot = plt, width = 8, height = 6, dpi = "print");
@@ -107,8 +135,8 @@ ggsave("output/analysis/plots/tuning_params_vs_error_polynomial.png",
 set.seed(112358);
 radial.tune <- tune(svm, DIABETICEV ~ ., data=train.ipums, kernel="radial", scale=TRUE,
                   cross=5, class.weights="inverse",
-                  ranges=list(cost=c(0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 3, 5, 10),
-                              gamma=c(0.001, 0.01, 0.1, 1, 10, 100)),
+                  ranges=list(cost=c(0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 3),
+                              gamma=c(0.001, 0.01, 0.1, 1, 10)),
                   error.fun=balanced_error);
 best_cost.radial <- radial.tune$best.parameters[1,1];
 best_gamma <- radial.tune$best.parameters[1,2];
@@ -123,16 +151,15 @@ plt <- ggplot(data = as.data.frame(radial.tune$performances),
                             linetype=as.factor(gamma))) +
   geom_line() +
   labs(title = "Cost and Gamma vs Balanced CV Error for Radial Kernel",
-       x = "Cost", y = "Balanced Error", color="Gamma", linetype="Gamma");# +
-  #annotate(geom="segment", x=best_cost, xend=best_cost, y=-Inf, yend=Inf,
-      #     linetype="dashed", color="darkred");
+       x = "Cost", y = "Balanced Error", color="Gamma", linetype="Gamma");
 print(plt);
 ggsave("output/analysis/plots/tuning_params_vs_error_radial.png", plot=plt,
        width = 8, height = 6, dpi = "print");
 ```
 
-
 ```{r}
+
+
 # comparison of training balanced error, training cv balanced error,
 # and test balanced error between the models
 traincv.linear <- min(linear.tune$performances$error);
@@ -149,23 +176,49 @@ trainerr.radial <- balanced_error(train.ipums$DIABETICEV, trainpred.radial);
 testpred.linear <- predict(linear.chosen_model, newdata=test.ipums);
 testpred.poly <- predict(poly.chosen_model, newdata=test.ipums);
 testpred.radial <- predict(radial.chosen_model, newdata=test.ipums);
+test_pred_df <- data.frame(actual = test.ipums$DIABETICEV, linear_kernel=testpred.linear,
+                           polynomial_kernel=testpred.poly, radial_kernel=testpred.radial);
+write.csv(test_pred_df, "output/analysis/data/testclass_actual_predicted_various_kernels.csv");
+
 testerr.linear <- balanced_error(test.ipums$DIABETICEV, testpred.linear);
 testerr.poly <- balanced_error(test.ipums$DIABETICEV, testpred.poly);
 testerr.radial <- balanced_error(test.ipums$DIABETICEV, testpred.radial);
+
+testprec.linear <- precision(test.ipums$DIABETICEV, testpred.linear);
+testprec.poly <- precision(test.ipums$DIABETICEV, testpred.poly);
+testprec.radial <- precision(test.ipums$DIABETICEV, testpred.radial);
+
+testrecall.linear <- recall(test.ipums$DIABETICEV, testpred.linear);
+testrecall.poly <- recall(test.ipums$DIABETICEV, testpred.poly);
+testrecall.radial <- recall(test.ipums$DIABETICEV, testpred.radial);
+
+testf1.linear <- f1_score(test.ipums$DIABETICEV, testpred.linear);
+testf1.poly <- f1_score(test.ipums$DIABETICEV, testpred.poly);
+testf1.radial <- f1_score(test.ipums$DIABETICEV, testpred.radial);
 
 kernel_types <- c("linear", "polynomial", "radial");
 training_cvs <- c(traincv.linear, traincv.poly, traincv.radial);
 train_errs <- c(trainerr.linear, trainerr.poly, trainerr.radial);
 test_errs <- c(testerr.linear, testerr.poly, testerr.radial);
+test_precisions <- c(testprec.linear, testprec.poly, testprec.radial);
+test_recalls <- c(testrecall.linear, testrecall.poly, testrecall.radial);
+test_f1s <- c(testf1.linear, testf1.poly, testf1.radial);
 chosen_cost <- c(best_cost, best_cost.poly, best_cost.radial);
 chosen_degree <- c(NA, best_degree, NA);
 chosen_gamma <- c(NA, NA, best_gamma);
+
 error_df <- data.frame(kernel = kernel_types, cost = chosen_cost, 
                        degree = chosen_degree, gamma = chosen_gamma,
                        training_cv_error = training_cvs,
-                       training_error = train_errs, testing_error = test_errs);
+                       training_error = train_errs, testing_error = test_errs,
+                       test_precision = test_precisions, test_recall = test_recalls,
+                       test_f1 = test_f1s);
+
 write.csv(error_df, file="output/analysis/data/tuned_model_kernel_comparison_errs.csv",
           row.names = FALSE);
+```
+
+```{r}
 plot_data <- pivot_longer(error_df, cols=c("training_cv_error", "training_error",
                                            "testing_error"),
                           names_to = "Error Type", values_to = "Error");
@@ -186,6 +239,7 @@ plt <- ggplot(data = plot_data, mapping = aes(x=kernel, y = Error,
                               "training_error"="coral",
                               "testing_error"="limegreen"),
                      labels=c("Train CV", "Train", "Test")) +
+  geom_text(aes(label = round(Error, 3)), hjust = -0.5) +
   labs(title = "Comparison of Tuned Model Error for Various Kernels",
        x = "Kernel", y = "Balanced Error", color = "Error Type",
        shape = "Error Type");
@@ -195,6 +249,20 @@ ggsave("output/analysis/plots/tuned_model_error_comparison.png", plot=plt,
 ```
 Based on balanced error for the test set, the polynomial kernel performs the best on this data set. Training and training CV error were also lower for the polynomial kernel. The polynomial kernel had degree 4, and the best model with this kernel in terms of training CV score had a cost value of 0.1.
 
+```{r}
+plot_metrics <- c("training_cv_error", "training_error", "testing_error",
+                  "test_precision", "test_recall", "test_f1");
+for (metric in plot_metrics) {
+  plt <- ggplot(data = error_df, mapping = aes(x=kernel, y = .data[[metric]])) +
+    geom_point(col="coral") +
+    geom_text(aes(label = round(.data[[metric]], 3)), vjust = -0.5) +
+    labs(title = paste0("Comparison of Tuned Model ", metric, " for Various Kernels"),
+         x = "Kernel", y = metric);
+  print(plt);
+  ggsave(paste0("output/analysis/plots/tuned_model_", metric, "_comparison.png"),
+         plot=plt, width = 8, height = 6, dpi = "print");
+}
+```
 
 
 ```{r}

@@ -1,16 +1,16 @@
 ---
 title: "Exploratory Analysis"
 author: "Elling Payne"
-date: "2025-04-27"
+date: "2025-05-09"
 output: html_document
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE);
+knitr::opts_chunk$set(root.dir = dirname(rstudioapi::getActiveDocumentContext()$path));
 knitr::opts_chunk$set(fig.align = "center");
 knitr::opts_chunk$set(seed = 112358);
 library(tidyverse);
-# library(e1071);
 ```
 
 ## Where did the data come from and what does it represent? What motivations are there for exploring it?
@@ -219,7 +219,9 @@ for (feature in features) {
 
 ## pairwise scatter plots of features vs the reponse in color
 
-```{r}
+I briefly looked over scatter plots for all of the interesting features that were easily translatable into interval variables. As the file became to large to upload to github with all of the plots, a small sample has been included here. In general, none of the plots show a strong obvious grouping with reasonable separation. This does not bode well for the use of a support vector machine unless some transformation could be identified which produces separation.
+
+```{r, eval=FALSE}
 col_is_numeric <- sapply(na_removed, is.numeric);
 normalized_data <- data.frame(na_removed);
 normalized_data[, col_is_numeric] <- na_removed[, col_is_numeric] %>%
@@ -248,9 +250,45 @@ for (response in responses) {
   }
 }
 ```
+```{r}
+# print 10 sample plots
+col_is_numeric <- sapply(na_removed, is.numeric);
+normalized_data <- data.frame(na_removed);
+normalized_data[, col_is_numeric] <- na_removed[, col_is_numeric] %>%
+  lapply(function(x) { return((x - mean(x))/sd(x)) });
+
+fig_cap <- 10;
+fig_cnt <- 0;
+response = "DIABETICEV";
+for (pair in combn(features, 2, simplify = FALSE)) {
+  if (fig_cnt >= fig_cap) break;
+  plt <- ggplot(data = normalized_data, mapping = aes(x=.data[[pair[1]]],
+                                                  y=.data[[pair[2]]],
+                                                  color=.data[[response]])) +
+    geom_point() + 
+    labs(title = paste0(response, " ~ ", pair[1], " + ", pair[2], " (Normalized)"),
+         x = paste0("Normalized ", pair[1]), y = paste0("Normalized ", pair[2]),
+         color = response);
+  scale_labels <- c("No", "Yes");
+  scale_values <- c("1"="skyblue", "2"="coral");
+  if (response == "DIABETICEV") {
+    scale_labels <- c(scale_labels, "Borderline");
+    scale_values <- c(scale_values, "3"="limegreen")
+  }
+  plt <- plt + scale_color_manual(values = scale_values,
+                                  labels = scale_labels);
+  print(plt);
+  ggsave(paste0("output/eda/plots/sample_", response, "_vs_", pair[1], "_and_", pair[2],
+                "_scatter.png"), plot = plt, width = 8, height = 8, dpi = "print");
+  fig_cnt <- fig_cnt + 1;
+}
+```
+
 
 
 ## Selection of final features and responses to explore
+
+While none of the eda yielded greatly encouraging results, some of the boxplots for DIABETICEV appeared to show relationships. These included age, hours worked last week, bmi, days of alcohol consumption in the previous year, quantity of soda consumed, and quantity of fries consumed. There is some concern with the consumption features being interval variables. This is because some of the values are calculated from responses to the consumption question based on smaller time intervals than one year. However, the variables are still closer to interval variables in appearance and meaning than some of the other features such as poverty level. They might be considered close enough to attempt to build a SVM. Diabetes might also be a problematic choice given the significant class imbalance, which might make it hard for the model to learn the features of a positive diagnosis. A SVM will not be that sensitive to class imbalance if there is a good deal of separation in the classes, since only the support vectors matter. However, in the case of a lot of overlap and necessarily many support vectors, the contribution of the minority class will be diluted. Further, DIABETICEV appears to have three valid categories, but there are no examples of the "borderline" category. As such, it will be treated as a case of binary classification with the caveat that the model may not generalize well to those with borderline diabetes without further training. A consolidation of the borderline category into one of the others, or a multi-class model would be needed as well.
 
 ```{r}
 # select DIABETICEV as the response
@@ -262,5 +300,33 @@ diabetes_ipums <- clean_ipums %>% select(c("DIABETICEV", "AGE", "BMICALC", "ALCD
 write.csv(diabetes_ipums, file="output/preprocessing/data/selected_response_and_features.csv",
           row.names = FALSE);
 save(diabetes_ipums, file="output/preprocessing/data/selected_response_and_features.RData");
+
+print(head(diabetes_ipums));
 ```
 
+```{r}
+
+pca.result <- prcomp(diabetes_ipums[, -which(names(diabetes_ipums) == "DIABETICEV")],
+                     center = TRUE, scale. = FALSE);
+pca_df <- data.frame(
+    comp1 = pca.result$x[,1], 
+    comp2 = pca.result$x[,2], 
+    DIABETICEV = diabetes_ipums$DIABETICEV)
+
+plt <- ggplot(data = pca_df, mapping = aes(x = comp1, y = comp2, col=DIABETICEV,
+                                           fill=DIABETICEV)) +
+  geom_point() +
+  labs(title="DIABETICEV in Principle Component Space",
+       x="Principle Component 1",
+       y="Principle Component 2",
+       fill = "Diagnosed Diabetic",
+       shape = "Diagnosed Diabetic",
+       col = "Diagnosed Diabetic") +
+  scale_fill_manual(values = c("1"="skyblue", "2"="coral", "3"="limegreen"),
+                    labels = c("No", "Yes", "Borderline")) +
+  scale_color_manual(values = c("1"="skyblue", "2"="coral", "3"="limegreen"),
+                     labels = c("No", "Yes", "Borderline"));
+print(plt);
+ggsave(filename="output/eda/plots/response_class_in_pca_space.png", plot=plt, width = 8,
+              height = 8, dpi="print");
+```
