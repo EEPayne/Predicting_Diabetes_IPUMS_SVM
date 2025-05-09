@@ -1,4 +1,4 @@
-"kernel","cost","degree","gamma","training_cv_error","training_error","testing_error"
-"linear",0.05,NA,NA,0.109960827440787,0.109961827361162,0.0995073891625615
-"polynomial",0.05,4,NA,0.110206829900811,0.109961827361162,0.1
-"radial",0.05,NA,0.001,0.109960827440787,0.109961827361162,0.0995073891625615
+"kernel","cost","degree","gamma","training_cv_error","training_error","testing_error","test_precision","test_recall","test_f1"
+"linear",0.05,NA,NA,0.109960827440787,0.109961827361162,0.0995073891625615,NA,0,0
+"polynomial",0.05,4,NA,0.110206829900811,0.109961827361162,0.1,0,0,0
+"radial",0.05,NA,0.001,0.109960827440787,0.109961827361162,0.0995073891625615,NA,0,0
